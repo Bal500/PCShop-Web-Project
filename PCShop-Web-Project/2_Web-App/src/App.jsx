@@ -19,11 +19,13 @@ const ALLOWED_EMAILS = [
 const VAPID_KEY = "BJ79MZmer9zzmvoX50NQuZLqISBudcwByd04Ah4W-O6io4iRebliNerHzMgRX_aOfzXwuQoJpBJTf72e8cdps-w";
 
 export default function App() {
+  const [cardExpenses, setCardExpenses] = useState([]);
   const [user, setUser] = useState(null);
   const [authReady, setAuthReady] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [authError, setAuthError] = useState("");
+  const [manualSales, setManualSales] = useState([]);
 
   const [tab, setTab] = useState("inventory");
   const [parts, setParts] = useState([]);
@@ -59,8 +61,14 @@ export default function App() {
     const u4 = onSnapshot(query(collection(db, "found_deals"), orderBy("foundAt", "desc")), (snap) => {
       setFoundDeals(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
     });
+    const u5 = onSnapshot(query(collection(db, "card_expenses"), orderBy("createdAt", "desc")), (snap) => {
+      setCardExpenses(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+    const u6 = onSnapshot(query(collection(db, "sales_log"), orderBy("soldAt", "desc")), (snap) => {
+      setManualSales(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
 
-    return () => { u1(); u2(); u3(); u4(); };
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); };
   }, [user]);
 
   async function registerPushToken(userEmail) {
@@ -153,7 +161,15 @@ export default function App() {
       <main className="main-content">
         {tab === "inventory" && <InventoryTab parts={parts} userEmail={user.email} />}
         {tab === "builder" && <BuilderTab parts={parts} builds={builds} />}
-        {tab === "finance" && <FinanceTab parts={parts} builds={builds} />}
+        {tab === "finance" && (
+          <FinanceTab
+            parts={parts}
+            builds={builds}
+            cardExpenses={cardExpenses}
+            manualSales={manualSales}
+            userEmail={user.email}
+          />
+        )}
         {tab === "deals" && <DealHunterTab dealWatches={dealWatches} foundDeals={foundDeals} />}
       </main>
 

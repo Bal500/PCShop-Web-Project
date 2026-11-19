@@ -3,10 +3,27 @@ service cloud.firestore {
   match /databases/{database}/documents {
     function isAuthorizedOwner() {
       return request.auth != null &&
-             request.auth.token.email in [
-               "te.email.cimed@gmail.com",
-               "baratod.email.cime@gmail.com"
+             request.auth.token.email != null &&
+             request.auth.token.email.lower() in [
+               "fabianbal500@gmail.com",
+               "beastmaster0626@gmail.com"
              ];
+    }
+
+    match /card_expenses/{expenseId} {
+      allow read: if isAuthorizedOwner();
+      allow create: if isAuthorizedOwner() &&
+                    request.resource.data.createdByEmail == request.auth.token.email.lower();
+      allow update, delete: if isAuthorizedOwner() &&
+                              resource.data.createdByEmail == request.auth.token.email.lower();
+    }
+
+    match /sales_log/{saleId} {
+      allow read: if isAuthorizedOwner();
+      allow create: if isAuthorizedOwner() &&
+                    request.resource.data.createdByEmail == request.auth.token.email.lower();
+      allow update, delete: if isAuthorizedOwner() &&
+                              resource.data.createdByEmail == request.auth.token.email.lower();
     }
 
     match /{document=**} {
