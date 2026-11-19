@@ -47,7 +47,6 @@ function getBuildInvoices(build, parts) {
 export default function FinanceTab({ parts, builds, cardExpenses = [], manualSales = [], userEmail }) {
   const currentEmail = (userEmail || "").toLowerCase();
 
-  // Saját kártyás tétel űrlap
   const [showAddExpense, setShowAddExpense] = useState(false);
   const [itemName, setItemName] = useState("");
   const [amount, setAmount] = useState("");
@@ -55,7 +54,6 @@ export default function FinanceTab({ parts, builds, cardExpenses = [], manualSal
   const [savingExpense, setSavingExpense] = useState(false);
   const [expenseError, setExpenseError] = useState("");
 
-  // Spontán eladás űrlap
   const [showAddSale, setShowAddSale] = useState(false);
   const [saleTitle, setSaleTitle] = useState("");
   const [salePrice, setSalePrice] = useState("");
@@ -67,6 +65,7 @@ export default function FinanceTab({ parts, builds, cardExpenses = [], manualSal
   const [showAllSales, setShowAllSales] = useState(false);
   const [expandedCardOwners, setExpandedCardOwners] = useState({});
   const [deletingEntryId, setDeletingEntryId] = useState(null);
+  const [deleteTargetEntry, setDeleteTargetEntry] = useState(null);
 
   const activeParts = parts.filter((p) => p.status !== "Eladva");
   const totalInvested = activeParts.reduce((s, p) => s + (p.purchasePrice || 0), 0);
@@ -241,12 +240,10 @@ export default function FinanceTab({ parts, builds, cardExpenses = [], manualSal
     }
   }
 
-  async function handleDeleteSalesEntry(entry) {
-    const confirmMsg =
-      entry.source === "spontaneous"
-        ? `Törlöd a naplóból: ${entry.title}?`
-        : `Eltávolítod az eladási naplóból: ${entry.title}? (A tétel visszakerül az aktív/összerakott nézetbe.)`;
-    if (!confirm(confirmMsg)) return;
+  async function handleConfirmDeleteSalesEntry() {
+    if (!deleteTargetEntry) return;
+    const entry = deleteTargetEntry;
+    setDeleteTargetEntry(null);
 
     setDeletingEntryId(entry.id);
     try {
@@ -547,7 +544,7 @@ export default function FinanceTab({ parts, builds, cardExpenses = [], manualSal
                   className="btn btn-red"
                   style={{ padding: "4px 8px" }}
                   disabled={deletingEntryId === entry.id}
-                  onClick={() => handleDeleteSalesEntry(entry)}
+                  onClick={() => setDeleteTargetEntry(entry)}
                   title="Eltávolítás a naplóból"
                 >
                   <Trash2 size={13} />
@@ -573,6 +570,59 @@ export default function FinanceTab({ parts, builds, cardExpenses = [], manualSal
           </div>
         ))}
       </div>
+
+      {/* Eladási napló törlés megerősítő modál */}
+      {deleteTargetEntry && (
+        <div
+          onClick={() => setDeleteTargetEntry(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0, 0, 0, 0.7)",
+            backdropFilter: "blur(3px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16,
+            zIndex: 1000
+          }}
+        >
+          <div
+            className="card"
+            onClick={(e) => e.stopPropagation()}
+            style={{ width: "100%", maxWidth: 430, margin: 0, borderRadius: 12 }}
+          >
+            <div className="row" style={{ marginBottom: 10 }}>
+              <h3 style={{ margin: 0 }}>Eltávolítás az eladási naplóból</h3>
+              <button className="btn btn-ghost" style={{ padding: 6 }} onClick={() => setDeleteTargetEntry(null)}>
+                <X size={16} />
+              </button>
+            </div>
+            <div style={{ fontSize: 13, lineHeight: 1.5 }}>
+              {deleteTargetEntry.source === "spontaneous" ? (
+                <>
+                  Biztosan törlöd a naplóból: <strong>{deleteTargetEntry.title}</strong>?
+                </>
+              ) : (
+                <>
+                  Eltávolítod az eladási naplóból: <strong>{deleteTargetEntry.title}</strong>?
+                  <div className="muted" style={{ marginTop: 6, fontSize: 12 }}>
+                    A tétel / gép visszakerül a készletbe vagy az összerakott gépek közé.
+                  </div>
+                </>
+              )}
+            </div>
+            <div className="row" style={{ marginTop: 14, justifyContent: "flex-end" }}>
+              <button className="btn btn-ghost" onClick={() => setDeleteTargetEntry(null)}>
+                Mégse
+              </button>
+              <button className="btn btn-red" onClick={handleConfirmDeleteSalesEntry}>
+                <Trash2 size={14} /> Megerősítés
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,6 +1,5 @@
 import React, { useMemo, useState } from "react";
 import { addDoc, collection, deleteDoc, doc, setDoc, updateDoc } from "firebase/firestore";
-import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
 import {
   Plus,
   X,
@@ -15,6 +14,7 @@ import {
   User
 } from "lucide-react";
 import { db, storage } from "../firebase";
+import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
 
 const CATEGORIES = [
   "Processzor",
@@ -85,7 +85,7 @@ async function uploadInvoicesBatch(fileList, prefix = "warranty") {
   const files = Array.from(fileList || []);
   if (files.length === 0) return [];
 
-  const uploaded = await Promise.all(
+  return Promise.all(
     files.map(async (file, idx) => {
       const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
       const storagePath = `warranty_invoices/${prefix}_${Date.now()}_${idx}_${safeName}`;
@@ -99,8 +99,6 @@ async function uploadInvoicesBatch(fileList, prefix = "warranty") {
       };
     })
   );
-
-  return uploaded;
 }
 
 function mergeUniqueInvoices(...lists) {
@@ -129,7 +127,7 @@ export default function WarrantyTab({
   warrantyComplaints = [],
   userEmail
 }) {
-  const [filterStatus, setFilterStatus] = useState("active"); // "active" | "expired" | "all"
+  const [filterStatus, setFilterStatus] = useState("active");
   const [search, setSearch] = useState("");
 
   // Egyedi garanciális tétel űrlap
@@ -146,7 +144,7 @@ export default function WarrantyTab({
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
 
-  // Teljes gép (alkatrészenként SN-ekkel + vevő nevével + gyűjtő számlákkal) garanciába űrlap
+  // Teljes gép űrlap
   const [showPcForm, setShowPcForm] = useState(false);
   const [editingPcDocId, setEditingPcDocId] = useState(null);
   const [pcName, setPcName] = useState("");
@@ -159,7 +157,7 @@ export default function WarrantyTab({
   const [savingPc, setSavingPc] = useState(false);
   const [pcErrorMsg, setPcErrorMsg] = useState("");
 
-  // Panasz felvétele űrlap + cserealkatrész frissítés
+  // Panasz űrlap
   const [showComplaintForm, setShowComplaintForm] = useState(false);
   const [complaintTargetEntry, setComplaintTargetEntry] = useState(null);
   const [selectedPartOption, setSelectedPartOption] = useState("");
@@ -169,15 +167,16 @@ export default function WarrantyTab({
   const [complaintResolutionType, setComplaintResolutionType] = useState("Csere másikra");
   const [complaintSolutionDetail, setComplaintSolutionDetail] = useState("");
   const [complaintCost, setComplaintCost] = useState("0");
-
-  // Csere esetén az új alkatrész adatai a garancia táblához
   const [replaceInWarranty, setReplaceInWarranty] = useState(true);
   const [replacementName, setReplacementName] = useState("");
   const [replacementSn, setReplacementSn] = useState("");
   const [replacementInvoiceFile, setReplacementInvoiceFile] = useState(null);
-
   const [savingComplaint, setSavingComplaint] = useState(false);
   const [complaintError, setComplaintError] = useState("");
+
+  // Törlés megerősítő modálok
+  const [deleteTargetEntry, setDeleteTargetEntry] = useState(null);
+  const [deleteTargetComplaint, setDeleteTargetComplaint] = useState(null);
 
   const now = Date.now();
 
@@ -725,9 +724,10 @@ export default function WarrantyTab({
     }
   }
 
-  async function handleDelete(entry) {
-    if (entry.isAutoBuild) return;
-    if (!confirm(`Törlöd a garancia listából: ${entry.name}?`)) return;
+  async function handleConfirmDeleteEntry() {
+    if (!deleteTargetEntry || deleteTargetEntry.isAutoBuild) return;
+    const entry = deleteTargetEntry;
+    setDeleteTargetEntry(null);
 
     if (entry.rawOverrideDoc?.id) {
       await deleteDoc(doc(db, "warranty_items", entry.rawOverrideDoc.id));
@@ -885,8 +885,10 @@ export default function WarrantyTab({
     }
   }
 
-  async function handleDeleteComplaint(complaint) {
-    if (!confirm(`Törlöd ezt a panaszt: ${complaint.partName}?`)) return;
+  async function handleConfirmDeleteComplaint() {
+    if (!deleteTargetComplaint) return;
+    const complaint = deleteTargetComplaint;
+    setDeleteTargetComplaint(null);
     await deleteDoc(doc(db, "warranty_complaints", complaint.id));
   }
 
@@ -941,7 +943,6 @@ export default function WarrantyTab({
         </div>
       </div>
 
-      {/* Teljes gép felvitele garanciába alkatrészenként + vevő nevével + gyűjtő számlákkal */}
       {showPcForm && (
         <form className="card" onSubmit={handleSavePc} style={{ marginBottom: 16 }}>
           <h3 style={{ marginTop: 0 }}>
@@ -1046,7 +1047,6 @@ export default function WarrantyTab({
             ))}
           </div>
 
-          {/* Gyűjtő számlafeltöltő a géphez */}
           <div
             style={{
               padding: 10,
@@ -1342,7 +1342,6 @@ export default function WarrantyTab({
             </div>
           </div>
 
-          {/* Gyűjtő számlafeltöltő új / szerkesztett tételhez */}
           <div
             style={{
               marginTop: 12,
@@ -1612,7 +1611,7 @@ export default function WarrantyTab({
                   <MessageSquareWarning size={14} /> Panasz
                 </button>
                 {!entry.isAutoBuild && (
-                  <button className="btn btn-red" onClick={() => handleDelete(entry)} title="Törlés">
+                  <button className="btn btn-red" onClick={() => setDeleteTargetEntry(entry)} title="Törlés">
                     <Trash2 size={14} />
                   </button>
                 )}
@@ -1683,7 +1682,7 @@ export default function WarrantyTab({
                     type="button"
                     className="btn btn-red"
                     style={{ padding: "4px 8px" }}
-                    onClick={() => handleDeleteComplaint(c)}
+                    onClick={() => setDeleteTargetComplaint(c)}
                     title="Panasz törlése"
                   >
                     <Trash2 size={13} />
@@ -1694,6 +1693,90 @@ export default function WarrantyTab({
           ))
         )}
       </div>
+
+      {/* Garanciális tétel törlése modál */}
+      {deleteTargetEntry && (
+        <div
+          onClick={() => setDeleteTargetEntry(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0, 0, 0, 0.7)",
+            backdropFilter: "blur(3px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16,
+            zIndex: 1000
+          }}
+        >
+          <div
+            className="card"
+            onClick={(e) => e.stopPropagation()}
+            style={{ width: "100%", maxWidth: 420, margin: 0, borderRadius: 12 }}
+          >
+            <div className="row" style={{ marginBottom: 10 }}>
+              <h3 style={{ margin: 0 }}>Garancia tétel törlése</h3>
+              <button className="btn btn-ghost" style={{ padding: 6 }} onClick={() => setDeleteTargetEntry(null)}>
+                <X size={16} />
+              </button>
+            </div>
+            <div style={{ fontSize: 13 }}>
+              Biztosan törlöd a garancia listából: <strong>{deleteTargetEntry.name}</strong>?
+            </div>
+            <div className="row" style={{ marginTop: 14, justifyContent: "flex-end" }}>
+              <button className="btn btn-ghost" onClick={() => setDeleteTargetEntry(null)}>
+                Mégse
+              </button>
+              <button className="btn btn-red" onClick={handleConfirmDeleteEntry}>
+                <Trash2 size={14} /> Törlés
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Panasz törlése modál */}
+      {deleteTargetComplaint && (
+        <div
+          onClick={() => setDeleteTargetComplaint(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0, 0, 0, 0.7)",
+            backdropFilter: "blur(3px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16,
+            zIndex: 1000
+          }}
+        >
+          <div
+            className="card"
+            onClick={(e) => e.stopPropagation()}
+            style={{ width: "100%", maxWidth: 420, margin: 0, borderRadius: 12 }}
+          >
+            <div className="row" style={{ marginBottom: 10 }}>
+              <h3 style={{ margin: 0 }}>Panasz törlése</h3>
+              <button className="btn btn-ghost" style={{ padding: 6 }} onClick={() => setDeleteTargetComplaint(null)}>
+                <X size={16} />
+              </button>
+            </div>
+            <div style={{ fontSize: 13 }}>
+              Biztosan törlöd ezt a panaszt: <strong>{deleteTargetComplaint.partName}</strong>?
+            </div>
+            <div className="row" style={{ marginTop: 14, justifyContent: "flex-end" }}>
+              <button className="btn btn-ghost" onClick={() => setDeleteTargetComplaint(null)}>
+                Mégse
+              </button>
+              <button className="btn btn-red" onClick={handleConfirmDeleteComplaint}>
+                <Trash2 size={14} /> Törlés
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

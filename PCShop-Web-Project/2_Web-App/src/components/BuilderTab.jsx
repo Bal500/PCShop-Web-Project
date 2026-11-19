@@ -1,7 +1,8 @@
-import React, { useMemo, useState } from "react";
-import { addDoc, collection, doc, updateDoc } from "firebase/firestore";
-import { Plus, X, Cpu, Trash2, Pencil } from "lucide-react";
-import { db } from "../firebase";
+import React, { useEffect, useMemo, useState } from "react";
+import { addDoc, collection, deleteDoc, doc, updateDoc } from "firebase/firestore";
+import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
+import { Plus, X, Cpu, Trash2, Pencil, Check, Camera } from "lucide-react";
+import { db, storage } from "../firebase";
 
 const SLOT_CATEGORIES = [
   { key: "cpu", label: "Processzor", category: "Processzor", multi: false },
@@ -28,25 +29,110 @@ const EMPTY_MULTI = {
   storage: [""]
 };
 
-export default function BuildsTab({ parts = [], builds = [] }) {
+function createPhotoSlot() {
+  return {
+    uid: `pc-slot-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    file: null
+  };
+}
+
+async function uploadBuildPhotoSlots(slots) {
+  const validSlots = (slots || []).filter((s) => s?.file);
+  if (validSlots.length === 0) return [];
+
+  return Promise.all(
+    validSlots.map(async (slot, idx) => {
+      const file = slot.file;
+      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+      const sRef = ref(storage, `build_photos/${Date.now()}_${idx}_${safeName}`);
+      await uploadBytes(sRef, file);
+      const url = await getDownloadURL(sRef);
+      return {
+        id: `${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 7)}`,
+        name: file.name,
+        url
+      };
+    })
+  );
+}
+
+function getBuildPhotoList(build) {
+  const result = [];
+  const seen = new Set();
+
+  if (Array.isArray(build?.photos)) {
+    build.photos.forEach((ph, idx) => {
+      const url = typeof ph === "string" ? ph : ph?.url;
+      if (!url || seen.has(url)) return;
+      seen.add(url);
+      result.push({
+        id: (typeof ph === "object" && ph?.id) || `bph-${idx}-${seen.size}`,
+        name: (typeof ph === "object" && ph?.name) || `PC kép ${idx + 1}`,
+        url
+      });
+    });
+  }
+
+  return result;
+}
+
+function BuildPhotoSlotPreview({ file }) {
+  const previewUrl = useMemo(() => (file ? URL.createObjectURL(file) : null), [file]);
+
+  useEffect(() => {
+    return () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    };
+  }, [previewUrl]);
+
+  if (!previewUrl) return null;
+
+  return (
+    <img
+      src={previewUrl}
+      alt={file?.name || "PC előnézet"}
+      style={{
+        height: 68,
+        width: 92,
+        borderRadius: 6,
+        objectFit: "cover",
+        border: "1px solid var(--border)",
+        flexShrink: 0
+      }}
+    />
+  );
+}
+
+export default function BuilderTab({ parts = [], builds = [] }) {
   const [showBuilder, setShowBuilder] = useState(false);
   const [editingBuild, setEditingBuild] = useState(null);
   const [buildName, setBuildName] = useState("");
   const [soldTogether, setSoldTogether] = useState(false);
   const [soldPrice, setSoldPrice] = useState("");
+  const [existingPhotos, setExistingPhotos] = useState([]);
+  const [photoSlots, setPhotoSlots] = useState([]);
   const [saving, setSaving] = useState(false);
+  const [deletingBuildId, setDeletingBuildId] = useState(null);
   const [errorMsg, setErrorMsg] = useState("");
+
+  // Eladás modal állapota
+  const [sellModalBuild, setSellModalBuild] = useState(null);
+  const [sellModalPrice, setSellModalPrice] = useState("");
+  const [sellModalError, setSellModalError] = useState("");
+  const [sellingInModal, setSellingInModal] = useState(false);
+
+  // Törlés megerősítő modal állapota
+  const [deleteModalBuild, setDeleteModalBuild] = useState(null);
 
   const [singleSelection, setSingleSelection] = useState(EMPTY_SINGLE);
   const [multiSelection, setMultiSelection] = useState(EMPTY_MULTI);
 
-  // Szerkesztéskor a gép saját alkatrészei + a szabad készleten lévő alkatrészek elérhetők
   const candidateParts = useMemo(() => {
     const editingIds = new Set(editingBuild?.partIds || []);
-    return parts.filter(
+    return (parts || []).filter(
       (p) =>
         editingIds.has(p.id) ||
-        (p.status === "Készleten" && !p.buildId)
+        ((p.status || "Készleten") === "Készleten" && !p.buildId)
     );
   }, [parts, editingBuild]);
 
@@ -75,6 +161,8 @@ export default function BuildsTab({ parts = [], builds = [] }) {
     setBuildName("");
     setSoldTogether(false);
     setSoldPrice("");
+    setExistingPhotos([]);
+    setPhotoSlots([]);
     setErrorMsg("");
     setSingleSelection(EMPTY_SINGLE);
     setMultiSelection(EMPTY_MULTI);
@@ -82,12 +170,13 @@ export default function BuildsTab({ parts = [], builds = [] }) {
 
   function openNewBuild() {
     resetBuilder();
+    setPhotoSlots([createPhotoSlot()]);
     setShowBuilder(true);
   }
 
   function openEditBuild(build) {
     const buildPartIdSet = new Set(build.partIds || []);
-    const matchedParts = parts.filter((p) => buildPartIdSet.has(p.id));
+    const matchedParts = (parts || []).filter((p) => buildPartIdSet.has(p.id));
 
     const nextSingle = { ...EMPTY_SINGLE };
     const nextMulti = { ram: [], storage: [] };
@@ -113,7 +202,6 @@ export default function BuildsTab({ parts = [], builds = [] }) {
       }
     });
 
-    // Ha volt olyan alkatrész a gépben, aminek a kategóriája nem egyezett meg pontosan a slot nevével, tegyük be a storage/ram slotba, hogy ne vesszen el
     const leftover = matchedParts.filter((p) => !usedIds.has(p.id));
     if (leftover.length > 0) {
       const existingStorage = nextMulti.storage.filter(Boolean);
@@ -124,12 +212,32 @@ export default function BuildsTab({ parts = [], builds = [] }) {
     setBuildName(build.name || "");
     const isSold = build.status === "Eladva";
     setSoldTogether(isSold);
-    setSoldPrice(isSold && build.soldPrice !== null && build.soldPrice !== undefined ? String(build.soldPrice) : "");
+    setSoldPrice(
+      isSold && build.soldPrice !== null && build.soldPrice !== undefined
+        ? String(build.soldPrice)
+        : ""
+    );
+    setExistingPhotos(getBuildPhotoList(build));
+    setPhotoSlots([]);
     setSingleSelection(nextSingle);
     setMultiSelection(nextMulti);
     setErrorMsg("");
     setShowBuilder(true);
     window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function handleAddBuildPhotoSlot() {
+    setPhotoSlots((prev) => [...prev, createPhotoSlot()]);
+  }
+
+  function handleBuildPhotoSlotFileChange(uid, file) {
+    setPhotoSlots((prev) =>
+      prev.map((slot) => (slot.uid === uid ? { ...slot, file: file || null } : slot))
+    );
+  }
+
+  function handleRemoveBuildPhotoSlot(uid) {
+    setPhotoSlots((prev) => prev.filter((slot) => slot.uid !== uid));
   }
 
   function handleSingleChange(slotKey, partId) {
@@ -181,13 +289,24 @@ export default function BuildsTab({ parts = [], builds = [] }) {
     }
 
     const numericSoldPrice = soldTogether ? Number(soldPrice) : null;
-    if (soldTogether && (soldPrice.trim() === "" || Number.isNaN(numericSoldPrice) || numericSoldPrice < 0)) {
+    if (
+      soldTogether &&
+      (soldPrice.trim() === "" || Number.isNaN(numericSoldPrice) || numericSoldPrice < 0)
+    ) {
       setErrorMsg("Add meg a gép eladási árát.");
       return;
     }
 
     setSaving(true);
     try {
+      const uploadedPhotos = await uploadBuildPhotoSlots(photoSlots);
+      const seenUrls = new Set();
+      const finalPhotos = [...existingPhotos, ...uploadedPhotos].filter((ph) => {
+        if (!ph?.url || seenUrls.has(ph.url)) return false;
+        seenUrls.add(ph.url);
+        return true;
+      });
+
       const now = Date.now();
       const nextStatus = soldTogether ? "Eladva" : "Összerakva";
       const nextPartIds = selectedParts.map((p) => p.id);
@@ -199,8 +318,10 @@ export default function BuildsTab({ parts = [], builds = [] }) {
           name: p.name,
           category: p.category || "",
           serialNumber: p.serialNumber || "",
-          purchasePrice: Number(p.purchasePrice || 0)
+          purchasePrice: Number(p.purchasePrice || 0),
+          invoiceFileUrl: p.invoiceFileUrl || null
         })),
+        photos: finalPhotos,
         totalCost,
         status: nextStatus,
         soldPrice: soldTogether ? numericSoldPrice : null,
@@ -218,7 +339,6 @@ export default function BuildsTab({ parts = [], builds = [] }) {
         targetBuildId = created.id;
       }
 
-      // Korábban a géphez tartozó, de most kikerült alkatrészek felszabadítása
       const previousIds = Array.isArray(editingBuild?.partIds) ? editingBuild.partIds : [];
       const removedIds = previousIds.filter((id) => !nextPartIds.includes(id));
 
@@ -227,15 +347,18 @@ export default function BuildsTab({ parts = [], builds = [] }) {
           updateDoc(doc(db, "parts", pid), {
             buildId: null,
             status: "Készleten",
-            soldAt: null
-          }).catch(() => null)
+            soldAt: null,
+            soldPrice: null
+          })
         ),
         ...selectedParts.map((part) =>
           updateDoc(doc(db, "parts", part.id), {
             buildId: targetBuildId,
             status: soldTogether ? "Eladva" : "Beépítve",
-            ...(soldTogether ? { soldAt: editingBuild?.soldAt || now } : { soldAt: null })
-          }).catch(() => null)
+            ...(soldTogether
+              ? { soldAt: editingBuild?.soldAt || now, soldPrice: numericSoldPrice }
+              : { soldAt: null, soldPrice: null })
+          })
         )
       ]);
 
@@ -249,30 +372,92 @@ export default function BuildsTab({ parts = [], builds = [] }) {
     }
   }
 
-  async function handleSellExistingBuild(build) {
-    const raw = prompt(`${build.name} eladási ára (Ft):`, String(build.soldPrice ?? build.totalCost ?? 0));
-    if (raw === null || raw.trim() === "") return;
-    const price = Number(raw);
-    if (Number.isNaN(price) || price < 0) return;
+  function openSellModal(build) {
+    setSellModalBuild(build);
+    setSellModalPrice(String(build.soldPrice ?? build.totalCost ?? 0));
+    setSellModalError("");
+  }
 
-    const now = build.soldAt || Date.now();
-    await updateDoc(doc(db, "builds", build.id), {
-      status: "Eladva",
-      soldPrice: price,
-      soldAt: now
-    });
+  async function handleConfirmSellModal(e) {
+    e.preventDefault();
+    if (!sellModalBuild) return;
+    setSellModalError("");
 
-    if (Array.isArray(build.partIds) && build.partIds.length > 0) {
-      await Promise.all(
-        build.partIds.map((pid) =>
-          updateDoc(doc(db, "parts", pid), {
-            status: "Eladva",
-            soldAt: now
-          }).catch(() => null)
-        )
-      );
+    const price = Number(sellModalPrice);
+    if (sellModalPrice.trim() === "" || Number.isNaN(price) || price < 0) {
+      setSellModalError("Adj meg érvényes eladási árat (0 Ft is lehet).");
+      return;
+    }
+
+    setSellingInModal(true);
+    try {
+      const now = sellModalBuild.soldAt || Date.now();
+      await updateDoc(doc(db, "builds", sellModalBuild.id), {
+        status: "Eladva",
+        soldPrice: price,
+        soldAt: now
+      });
+
+      if (Array.isArray(sellModalBuild.partIds) && sellModalBuild.partIds.length > 0) {
+        await Promise.all(
+          sellModalBuild.partIds.map((pid) =>
+            updateDoc(doc(db, "parts", pid), {
+              status: "Eladva",
+              soldAt: now
+            })
+          )
+        );
+      }
+
+      setSellModalBuild(null);
+      setSellModalPrice("");
+    } finally {
+      setSellingInModal(false);
     }
   }
+
+  async function handleConfirmDeleteBuild() {
+    if (!deleteModalBuild) return;
+    const build = deleteModalBuild;
+    setDeleteModalBuild(null);
+    setDeletingBuildId(build.id);
+
+    try {
+      const idsFromPartIds = Array.isArray(build.partIds) ? build.partIds : [];
+      const idsFromSummary = Array.isArray(build.partsSummary)
+        ? build.partsSummary.map((item) => item?.id).filter(Boolean)
+        : [];
+      const idsFromParts = Array.isArray(build.parts)
+        ? build.parts.map((item) => (typeof item === "string" ? item : item?.id)).filter(Boolean)
+        : [];
+
+      const allPartIds = Array.from(new Set([...idsFromPartIds, ...idsFromSummary, ...idsFromParts]));
+
+      await Promise.all(
+        allPartIds.map((pid) =>
+          updateDoc(doc(db, "parts", pid), {
+            status: "Készleten",
+            buildId: null,
+            soldAt: null,
+            soldPrice: null
+          })
+        )
+      );
+
+      await deleteDoc(doc(db, "builds", build.id));
+
+      if (editingBuild?.id === build.id) {
+        resetBuilder();
+        setShowBuilder(false);
+      }
+    } finally {
+      setDeletingBuildId(null);
+    }
+  }
+
+  const modalCost = Number(sellModalBuild?.totalCost || 0);
+  const modalNumericPrice = Number(sellModalPrice);
+  const modalPreviewProfit = !Number.isNaN(modalNumericPrice) ? modalNumericPrice - modalCost : null;
 
   return (
     <div>
@@ -294,10 +479,14 @@ export default function BuildsTab({ parts = [], builds = [] }) {
         <form className="card" onSubmit={handleSaveBuild} style={{ marginBottom: 16 }}>
           <div className="row" style={{ marginBottom: 10 }}>
             <h3 style={{ margin: 0 }}>
-              {editingBuild ? `Gép szerkesztése: ${editingBuild.name}` : "Új gép összeállítása alkatrészenként"}
+              {editingBuild
+                ? `Gép szerkesztése: ${editingBuild.name}`
+                : "Új gép összeállítása alkatrészenként"}
             </h3>
             {editingBuild && (
-              <span className={`badge ${editingBuild.status === "Eladva" ? "badge-green" : "badge-blue"}`}>
+              <span
+                className={`badge ${editingBuild.status === "Eladva" ? "badge-green" : "badge-blue"}`}
+              >
                 {editingBuild.status || "Összerakva"}
               </span>
             )}
@@ -375,7 +564,11 @@ export default function BuildsTab({ parts = [], builds = [] }) {
                   {slotIds.map((partId, idx) => {
                     const options = getOptionsForSlot(slot.category, partId);
                     return (
-                      <div className="row" key={`${slot.key}-${idx}`} style={{ marginBottom: 6, gap: 6 }}>
+                      <div
+                        className="row"
+                        key={`${slot.key}-${idx}`}
+                        style={{ marginBottom: 6, gap: 6 }}
+                      >
                         <select
                           value={partId}
                           onChange={(e) => handleMultiChange(slot.key, idx, e.target.value)}
@@ -406,6 +599,110 @@ export default function BuildsTab({ parts = [], builds = [] }) {
             })}
           </div>
 
+          {/* Képek az elkészült PC-ről: „További kép feltöltése” külön mezőkkel */}
+          <div
+            style={{
+              marginTop: 14,
+              padding: 12,
+              borderRadius: 8,
+              border: "1px solid var(--border)",
+              background: "rgba(255,255,255,0.02)"
+            }}
+          >
+            <div className="row" style={{ marginBottom: 8 }}>
+              <span className="muted" style={{ fontSize: 12, display: "inline-flex", alignItems: "center", gap: 5 }}>
+                <Camera size={14} /> Képek az elkészült PC-ről (galériából vagy kamerával)
+              </span>
+              <button
+                type="button"
+                className="btn btn-green"
+                style={{ padding: "4px 9px", fontSize: 12 }}
+                onClick={handleAddBuildPhotoSlot}
+              >
+                <Plus size={13} /> További kép feltöltése
+              </button>
+            </div>
+
+            {existingPhotos.length > 0 && (
+              <div style={{ marginBottom: 8, display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {existingPhotos.map((ph) => (
+                  <div key={ph.id} style={{ position: "relative" }}>
+                    <img
+                      src={ph.url}
+                      alt={ph.name}
+                      style={{
+                        height: 76,
+                        width: 104,
+                        borderRadius: 6,
+                        objectFit: "cover",
+                        border: "1px solid var(--border)"
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setExistingPhotos((prev) => prev.filter((item) => item.id !== ph.id))
+                      }
+                      style={{
+                        position: "absolute",
+                        top: 3,
+                        right: 3,
+                        background: "rgba(0,0,0,0.75)",
+                        color: "#fff",
+                        border: "none",
+                        borderRadius: 999,
+                        width: 18,
+                        height: 18,
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        cursor: "pointer",
+                        padding: 0
+                      }}
+                      title="Kép törlése"
+                    >
+                      <X size={11} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {photoSlots.map((slot) => (
+              <div
+                key={slot.uid}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  marginBottom: 8
+                }}
+              >
+                <BuildPhotoSlotPreview file={slot.file} />
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => handleBuildPhotoSlotFileChange(slot.uid, e.target.files?.[0] || null)}
+                />
+                <button
+                  type="button"
+                  className="btn btn-red"
+                  style={{ padding: "5px 7px" }}
+                  onClick={() => handleRemoveBuildPhotoSlot(slot.uid)}
+                  title="Képmező törlése"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            ))}
+
+            {existingPhotos.length === 0 && photoSlots.length === 0 && (
+              <div className="muted" style={{ fontSize: 12 }}>
+                Kattints a „További kép feltöltése” gombra PC-fotó hozzáadásához.
+              </div>
+            )}
+          </div>
+
           <div
             style={{
               marginTop: 14,
@@ -424,7 +721,10 @@ export default function BuildsTab({ parts = [], builds = [] }) {
 
             {selectedParts.length > 0 && (
               <div className="muted" style={{ marginTop: 6, fontSize: 12 }}>
-                Kiválasztva: {selectedParts.map((p) => `${p.name} (${Number(p.purchasePrice || 0).toLocaleString("hu-HU")} Ft)`).join(" • ")}
+                Kiválasztva:{" "}
+                {selectedParts
+                  .map((p) => `${p.name} (${Number(p.purchasePrice || 0).toLocaleString("hu-HU")} Ft)`)
+                  .join(" • ")}
               </div>
             )}
 
@@ -477,12 +777,13 @@ export default function BuildsTab({ parts = [], builds = [] }) {
       )}
 
       <div className="grid-2">
-        {builds.map((b) => {
+        {(builds || []).map((b) => {
           const items = Array.isArray(b.partsSummary) ? b.partsSummary : [];
           const cost = Number(b.totalCost || 0);
           const sold = b.soldPrice !== null && b.soldPrice !== undefined ? Number(b.soldPrice) : null;
           const isSold = b.status === "Eladva";
           const profit = isSold && sold !== null ? sold - cost : null;
+          const buildPhotos = getBuildPhotoList(b);
 
           return (
             <div
@@ -497,7 +798,6 @@ export default function BuildsTab({ parts = [], builds = [] }) {
               }}
             >
               <div>
-                {/* Fejléc: Gép neve + státusz */}
                 <div className="row" style={{ marginBottom: 10 }}>
                   <div className="row" style={{ gap: 8 }}>
                     <Cpu size={18} color="#60a5fa" />
@@ -508,11 +808,38 @@ export default function BuildsTab({ parts = [], builds = [] }) {
                   </span>
                 </div>
 
-                {/* Pénzügyi összefoglaló sáv */}
+                {buildPhotos.length > 0 && (
+                  <div
+                    style={{
+                      marginBottom: 10,
+                      display: "grid",
+                      gridTemplateColumns: buildPhotos.length === 1 ? "1fr" : "repeat(2, 1fr)",
+                      gap: 6
+                    }}
+                  >
+                    {buildPhotos.map((ph) => (
+                      <a key={ph.id} href={ph.url} target="_blank" rel="noreferrer">
+                        <img
+                          src={ph.url}
+                          alt={ph.name || b.name}
+                          style={{
+                            width: "100%",
+                            height: buildPhotos.length === 1 ? 160 : 100,
+                            objectFit: "cover",
+                            borderRadius: 8,
+                            border: "1px solid var(--border)"
+                          }}
+                        />
+                      </a>
+                    ))}
+                  </div>
+                )}
+
                 <div
                   style={{
                     display: "grid",
-                    gridTemplateColumns: isSold && profit !== null ? "repeat(3, 1fr)" : "repeat(2, 1fr)",
+                    gridTemplateColumns:
+                      isSold && profit !== null ? "repeat(3, 1fr)" : "repeat(2, 1fr)",
                     gap: 8,
                     padding: 10,
                     borderRadius: 8,
@@ -550,7 +877,6 @@ export default function BuildsTab({ parts = [], builds = [] }) {
                   )}
                 </div>
 
-                {/* Alkatrészek listája */}
                 {items.length > 0 && (
                   <div style={{ display: "flex", flexDirection: "column" }}>
                     {items.map((item, idx) => (
@@ -559,7 +885,8 @@ export default function BuildsTab({ parts = [], builds = [] }) {
                         className="row"
                         style={{
                           padding: "6px 0",
-                          borderBottom: idx < items.length - 1 ? "1px solid rgba(255,255,255,0.06)" : "none",
+                          borderBottom:
+                            idx < items.length - 1 ? "1px solid rgba(255,255,255,0.06)" : "none",
                           gap: 8
                         }}
                       >
@@ -572,13 +899,19 @@ export default function BuildsTab({ parts = [], builds = [] }) {
                               {item.category}
                             </span>
                           )}
-                          <span style={{ fontSize: 13, overflow: "hidden", textOverflow: "ellipsis" }}>
+                          <span
+                            style={{ fontSize: 13, overflow: "hidden", textOverflow: "ellipsis" }}
+                          >
                             {item.name}
                           </span>
                         </div>
                         <span
                           className="muted"
-                          style={{ fontSize: 13, whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}
+                          style={{
+                            fontSize: 13,
+                            whiteSpace: "nowrap",
+                            fontVariantNumeric: "tabular-nums"
+                          }}
                         >
                           {Number(item.purchasePrice || 0).toLocaleString("hu-HU")} Ft
                         </span>
@@ -588,21 +921,188 @@ export default function BuildsTab({ parts = [], builds = [] }) {
                 )}
               </div>
 
-              {/* Lábléc gombok */}
-              <div className="row" style={{ paddingTop: 6, borderTop: "1px solid rgba(255,255,255,0.06)" }}>
+              <div
+                className="row"
+                style={{ paddingTop: 6, borderTop: "1px solid rgba(255,255,255,0.06)" }}
+              >
                 <button className="btn btn-ghost" onClick={() => openEditBuild(b)}>
                   <Pencil size={14} /> Szerkesztés
                 </button>
                 {!isSold && (
-                  <button className="btn btn-green" onClick={() => handleSellExistingBuild(b)}>
+                  <button className="btn btn-green" onClick={() => openSellModal(b)}>
                     Eladás rögzítése
                   </button>
                 )}
+                <button
+                  className="btn btn-red"
+                  disabled={deletingBuildId === b.id}
+                  onClick={() => setDeleteModalBuild(b)}
+                  title="Gép törlése"
+                >
+                  <Trash2 size={14} /> {deletingBuildId === b.id ? "Törlés..." : "Törlés"}
+                </button>
               </div>
             </div>
           );
         })}
       </div>
+
+      {/* Eladás rögzítése modal */}
+      {sellModalBuild && (
+        <div
+          onClick={() => !sellingInModal && setSellModalBuild(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0, 0, 0, 0.7)",
+            backdropFilter: "blur(3px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16,
+            zIndex: 1000
+          }}
+        >
+          <form
+            className="card"
+            onClick={(e) => e.stopPropagation()}
+            onSubmit={handleConfirmSellModal}
+            style={{
+              width: "100%",
+              maxWidth: 420,
+              margin: 0,
+              borderRadius: 12,
+              boxShadow: "0 20px 50px rgba(0, 0, 0, 0.6)"
+            }}
+          >
+            <div className="row" style={{ marginBottom: 10 }}>
+              <h3 style={{ margin: 0 }}>Gép eladásának rögzítése</h3>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                style={{ padding: 6 }}
+                onClick={() => setSellModalBuild(null)}
+                disabled={sellingInModal}
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="muted" style={{ marginBottom: 12, fontSize: 13 }}>
+              Gép: <strong>{sellModalBuild.name}</strong> • Bekerülés:{" "}
+              <strong>{modalCost.toLocaleString("hu-HU")} Ft</strong>
+            </div>
+
+            <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>
+              Eladási ár (Ft)
+            </div>
+            <input
+              type="number"
+              min="0"
+              value={sellModalPrice}
+              onChange={(e) => setSellModalPrice(e.target.value)}
+              autoFocus
+              required
+            />
+
+            {modalPreviewProfit !== null && (
+              <div className="row" style={{ marginTop: 10, fontSize: 13 }}>
+                <span className="muted">Várható profit:</span>
+                <strong className={modalPreviewProfit >= 0 ? "green" : "red"}>
+                  {modalPreviewProfit >= 0 ? "+" : ""}
+                  {modalPreviewProfit.toLocaleString("hu-HU")} Ft
+                </strong>
+              </div>
+            )}
+
+            {sellModalError && (
+              <div className="red" style={{ marginTop: 8, fontSize: 13 }}>
+                {sellModalError}
+              </div>
+            )}
+
+            <div className="row" style={{ marginTop: 14, justifyContent: "flex-end" }}>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => setSellModalBuild(null)}
+                disabled={sellingInModal}
+              >
+                Mégse
+              </button>
+              <button type="submit" className="btn btn-green" disabled={sellingInModal}>
+                <Check size={15} /> {sellingInModal ? "Mentés..." : "Eladás rögzítése"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Törlés megerősítése modal */}
+      {deleteModalBuild && (
+        <div
+          onClick={() => setDeleteModalBuild(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0, 0, 0, 0.7)",
+            backdropFilter: "blur(3px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16,
+            zIndex: 1000
+          }}
+        >
+          <div
+            className="card"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "100%",
+              maxWidth: 420,
+              margin: 0,
+              borderRadius: 12,
+              boxShadow: "0 20px 50px rgba(0, 0, 0, 0.6)"
+            }}
+          >
+            <div className="row" style={{ marginBottom: 10 }}>
+              <h3 style={{ margin: 0 }}>Gép törlése</h3>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                style={{ padding: 6 }}
+                onClick={() => setDeleteModalBuild(null)}
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div style={{ fontSize: 13, lineHeight: 1.5 }}>
+              Biztosan törlöd ezt a gépet: <strong>{deleteModalBuild.name}</strong>?
+              <div className="muted" style={{ marginTop: 6, fontSize: 12 }}>
+                A beépített alkatrészei automatikusan visszakerülnek a készletbe.
+              </div>
+            </div>
+
+            <div className="row" style={{ marginTop: 14, justifyContent: "flex-end" }}>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => setDeleteModalBuild(null)}
+              >
+                Mégse
+              </button>
+              <button
+                type="button"
+                className="btn btn-red"
+                onClick={handleConfirmDeleteBuild}
+              >
+                <Trash2 size={14} /> Igen, törlöm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
