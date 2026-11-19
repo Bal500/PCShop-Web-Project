@@ -1,0 +1,16 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAuthorizedOwner() {
+      return request.auth != null &&
+             request.auth.token.email in [
+               "te.email.cimed@gmail.com",
+               "baratod.email.cime@gmail.com"
+             ];
+    }
+
+    match /{document=**} {
+      allow read, write: if isAuthorizedOwner();
+    }
+  }
+}
