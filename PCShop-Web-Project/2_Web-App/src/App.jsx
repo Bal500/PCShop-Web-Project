@@ -16,7 +16,7 @@ const ALLOWED_EMAILS = [
   "beastmaster0626@gmail.com"
 ];
 
-const VAPID_KEY = "SAJAT_WEB_PUSH_VAPID_KULCS";
+const VAPID_KEY = "BJ79MZmer9zzmvoX50NQuZLqISBudcwByd04Ah4W-O6io4iRebliNerHzMgRX_aOfzXwuQoJpBJTf72e8cdps-w";
 
 export default function App() {
   const [user, setUser] = useState(null);
