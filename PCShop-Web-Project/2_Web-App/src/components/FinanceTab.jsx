@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { addDoc, collection, deleteDoc, doc, updateDoc } from "firebase/firestore";
-import { Plus, X, ChevronDown, ChevronUp, Trash2 } from "lucide-react";
+import { Plus, X, ChevronDown, ChevronUp, Trash2, FileText } from "lucide-react";
 import { db } from "../firebase";
 
 const ALLOWED_EMAILS = [
@@ -9,12 +9,39 @@ const ALLOWED_EMAILS = [
 ];
 
 const INITIAL_SALES_LIMIT = 10;
+const INITIAL_CARD_LIMIT = 10;
 
 function isThisMonth(ts) {
   if (!ts) return false;
   const d = new Date(ts);
   const now = new Date();
   return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+}
+
+function getBuildInvoices(build, parts) {
+  const byId = new Map((parts || []).map((p) => [p.id, p]));
+  const ids = Array.isArray(build.partIds)
+    ? build.partIds
+    : Array.isArray(build.parts)
+      ? build.parts.map((p) => (typeof p === "string" ? p : p?.id)).filter(Boolean)
+      : [];
+
+  const result = [];
+  const seen = new Set();
+
+  ids.forEach((id) => {
+    const part = byId.get(id);
+    if (part?.invoiceFileUrl && !seen.has(part.invoiceFileUrl)) {
+      seen.add(part.invoiceFileUrl);
+      result.push({
+        id: part.id,
+        label: part.category ? `${part.name} (${part.category})` : part.name,
+        url: part.invoiceFileUrl
+      });
+    }
+  });
+
+  return result;
 }
 
 export default function FinanceTab({ parts, builds, cardExpenses = [], manualSales = [], userEmail }) {
@@ -38,6 +65,8 @@ export default function FinanceTab({ parts, builds, cardExpenses = [], manualSal
   const [saleError, setSaleError] = useState("");
 
   const [showAllSales, setShowAllSales] = useState(false);
+  const [expandedCardOwners, setExpandedCardOwners] = useState({});
+  const [deletingEntryId, setDeletingEntryId] = useState(null);
 
   const activeParts = parts.filter((p) => p.status !== "Eladva");
   const totalInvested = activeParts.reduce((s, p) => s + (p.purchasePrice || 0), 0);
@@ -84,12 +113,14 @@ export default function FinanceTab({ parts, builds, cardExpenses = [], manualSal
       id: `build-${b.id}`,
       rawId: b.id,
       source: "build",
+      partIds: Array.isArray(b.partIds) ? b.partIds : [],
       title: `[Gép] ${b.name}`,
       cost: b.totalCost || 0,
       price: b.soldPrice || 0,
       profit: (b.soldPrice || 0) - (b.totalCost || 0),
       soldAt: b.soldAt || 0,
-      note: ""
+      note: "",
+      invoices: getBuildInvoices(b, parts)
     })),
     ...soldSoloParts.map((p) => ({
       id: `part-${p.id}`,
@@ -100,7 +131,8 @@ export default function FinanceTab({ parts, builds, cardExpenses = [], manualSal
       price: p.soldPrice || 0,
       profit: (p.soldPrice || 0) - (p.purchasePrice || 0),
       soldAt: p.soldAt || 0,
-      note: ""
+      note: "",
+      invoices: p.invoiceFileUrl ? [{ id: p.id, label: p.name, url: p.invoiceFileUrl }] : []
     })),
     ...manualSales.map((s) => ({
       id: `spontaneous-${s.id}`,
@@ -111,7 +143,8 @@ export default function FinanceTab({ parts, builds, cardExpenses = [], manualSal
       price: s.price || 0,
       profit: (s.price || 0) - (s.cost || 0),
       soldAt: s.soldAt || s.createdAt || 0,
-      note: s.note || ""
+      note: s.note || "",
+      invoices: []
     }))
   ].sort((a, b) => b.soldAt - a.soldAt);
 
@@ -122,6 +155,10 @@ export default function FinanceTab({ parts, builds, cardExpenses = [], manualSal
 
   const hasMoreSales = allSalesEntries.length > INITIAL_SALES_LIMIT;
   const visibleSalesLog = showAllSales ? allSalesEntries : allSalesEntries.slice(0, INITIAL_SALES_LIMIT);
+
+  function toggleCardOwner(owner) {
+    setExpandedCardOwners((prev) => ({ ...prev, [owner]: !prev[owner] }));
+  }
 
   async function handleAddCardExpense(e) {
     e.preventDefault();
@@ -204,9 +241,44 @@ export default function FinanceTab({ parts, builds, cardExpenses = [], manualSal
     }
   }
 
-  async function handleDeleteSpontaneousSale(rawId) {
-    if (!confirm("Törlöd ezt a spontán eladási bejegyzést?")) return;
-    await deleteDoc(doc(db, "sales_log", rawId));
+  async function handleDeleteSalesEntry(entry) {
+    const confirmMsg =
+      entry.source === "spontaneous"
+        ? `Törlöd a naplóból: ${entry.title}?`
+        : `Eltávolítod az eladási naplóból: ${entry.title}? (A tétel visszakerül az aktív/összerakott nézetbe.)`;
+    if (!confirm(confirmMsg)) return;
+
+    setDeletingEntryId(entry.id);
+    try {
+      if (entry.source === "spontaneous") {
+        await deleteDoc(doc(db, "sales_log", entry.rawId));
+      } else if (entry.source === "part") {
+        await updateDoc(doc(db, "parts", entry.rawId), {
+          status: "Készleten",
+          soldPrice: null,
+          soldAt: null,
+          buildId: null
+        });
+      } else if (entry.source === "build") {
+        await updateDoc(doc(db, "builds", entry.rawId), {
+          status: "Összerakva",
+          soldPrice: null,
+          soldAt: null
+        });
+        if (Array.isArray(entry.partIds) && entry.partIds.length > 0) {
+          await Promise.all(
+            entry.partIds.map((pid) =>
+              updateDoc(doc(db, "parts", pid), {
+                status: "Beépítve",
+                soldAt: null
+              }).catch(() => null)
+            )
+          );
+        }
+      }
+    } finally {
+      setDeletingEntryId(null);
+    }
   }
 
   return (
@@ -356,21 +428,44 @@ export default function FinanceTab({ parts, builds, cardExpenses = [], manualSal
           const items = allCardItems.filter((i) => i.ownerEmail === owner);
           const sum = items.reduce((s, i) => s + (i.amount || 0), 0);
           const isMine = owner === currentEmail;
+          const isExpanded = !!expandedCardOwners[owner];
+          const hasMoreCardItems = items.length > INITIAL_CARD_LIMIT;
+          const visibleCardItems = isExpanded ? items : items.slice(0, INITIAL_CARD_LIMIT);
 
           return (
             <div className="card" key={owner}>
               <div className="row" style={{ marginBottom: 8 }}>
                 <h3 style={{ margin: 0 }}>{owner}</h3>
-                <span className={`badge ${isMine ? "badge-purple" : "badge-blue"}`}>
-                  {isMine ? "Saját kártyád" : "Másik fiók"}
-                </span>
+                <div className="row">
+                  {hasMoreCardItems && (
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      style={{ padding: "4px 9px", fontSize: 12 }}
+                      onClick={() => toggleCardOwner(owner)}
+                    >
+                      {isExpanded ? (
+                        <>
+                          <ChevronUp size={13} /> Kevesebb
+                        </>
+                      ) : (
+                        <>
+                          <ChevronDown size={13} /> Összes ({items.length})
+                        </>
+                      )}
+                    </button>
+                  )}
+                  <span className={`badge ${isMine ? "badge-purple" : "badge-blue"}`}>
+                    {isMine ? "Saját kártyád" : "Másik fiók"}
+                  </span>
+                </div>
               </div>
 
               {items.length === 0 ? (
                 <div className="muted">Nincs elszámolatlan saját kártyás tétel.</div>
               ) : (
                 <>
-                  {items.map((item) => (
+                  {visibleCardItems.map((item) => (
                     <div className="row" key={`${item.kind}-${item.id}`} style={{ padding: "8px 0", borderBottom: "1px solid var(--border)" }}>
                       <div>
                         <strong>{item.name}</strong>
@@ -435,29 +530,46 @@ export default function FinanceTab({ parts, builds, cardExpenses = [], manualSal
         </div>
 
         {visibleSalesLog.map((entry) => (
-          <div className="row" key={entry.id} style={{ padding: "6px 0", borderBottom: "1px solid var(--border)" }}>
-            <div>
-              <span>
-                {entry.title} ({entry.cost.toLocaleString("hu-HU")} → {entry.price.toLocaleString("hu-HU")} Ft)
-              </span>
-              {entry.note && <div className="muted">{entry.note}</div>}
-            </div>
+          <div key={entry.id} style={{ padding: "8px 0", borderBottom: "1px solid var(--border)" }}>
             <div className="row">
-              <strong className={entry.profit >= 0 ? "green" : "red"}>
-                {entry.profit >= 0 ? "+" : ""}{entry.profit.toLocaleString("hu-HU")} Ft
-              </strong>
-              {entry.source === "spontaneous" && (
+              <div>
+                <span>
+                  {entry.title} ({entry.cost.toLocaleString("hu-HU")} → {entry.price.toLocaleString("hu-HU")} Ft)
+                </span>
+                {entry.note && <div className="muted">{entry.note}</div>}
+              </div>
+              <div className="row">
+                <strong className={entry.profit >= 0 ? "green" : "red"}>
+                  {entry.profit >= 0 ? "+" : ""}{entry.profit.toLocaleString("hu-HU")} Ft
+                </strong>
                 <button
                   type="button"
                   className="btn btn-red"
                   style={{ padding: "4px 8px" }}
-                  onClick={() => handleDeleteSpontaneousSale(entry.rawId)}
-                  title="Törlés"
+                  disabled={deletingEntryId === entry.id}
+                  onClick={() => handleDeleteSalesEntry(entry)}
+                  title="Eltávolítás a naplóból"
                 >
                   <Trash2 size={13} />
                 </button>
-              )}
+              </div>
             </div>
+
+            {entry.source === "build" && entry.invoices?.length > 0 && (
+              <div className="row" style={{ marginTop: 6, flexWrap: "wrap", gap: 10 }}>
+                {entry.invoices.map((inv) => (
+                  <a
+                    key={`${entry.id}-${inv.id}`}
+                    href={inv.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ color: "#fb923c", fontSize: 12, display: "inline-flex", alignItems: "center", gap: 4 }}
+                  >
+                    <FileText size={13} /> Számla: {inv.label}
+                  </a>
+                ))}
+              </div>
+            )}
           </div>
         ))}
       </div>

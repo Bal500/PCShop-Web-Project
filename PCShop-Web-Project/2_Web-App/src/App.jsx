@@ -4,12 +4,13 @@ import React, { useEffect, useState } from "react";
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { collection, doc, onSnapshot, orderBy, query, setDoc, serverTimestamp } from "firebase/firestore";
 import { getToken } from "firebase/messaging";
-import { Package, Wrench, Wallet, Flame, LogOut, Cpu } from "lucide-react";
+import { Package, Wrench, Wallet, Flame, LogOut, Cpu, ShieldCheck } from "lucide-react";
 import { auth, db, getMessagingSafe } from "./firebase";
 import InventoryTab from "./components/InventoryTab";
 import BuilderTab from "./components/BuilderTab";
 import FinanceTab from "./components/FinanceTab";
 import DealHunterTab from "./components/DealHunterTab";
+import WarrantyTab from "./components/WarrantyTab";
 
 const ALLOWED_EMAILS = [
   "fabianbal500@gmail.com",
@@ -26,6 +27,8 @@ export default function App() {
   const [password, setPassword] = useState("");
   const [authError, setAuthError] = useState("");
   const [manualSales, setManualSales] = useState([]);
+  const [warrantyItems, setWarrantyItems] = useState([]);
+  const [warrantyComplaints, setWarrantyComplaints] = useState([]);
 
   const [tab, setTab] = useState("inventory");
   const [parts, setParts] = useState([]);
@@ -67,8 +70,14 @@ export default function App() {
     const u6 = onSnapshot(query(collection(db, "sales_log"), orderBy("soldAt", "desc")), (snap) => {
       setManualSales(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
     });
+    const u7 = onSnapshot(query(collection(db, "warranty_items"), orderBy("soldAt", "desc")), (snap) => {
+      setWarrantyItems(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+    const u8 = onSnapshot(query(collection(db, "warranty_complaints"), orderBy("createdAt", "desc")), (snap) => {
+      setWarrantyComplaints(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
 
-    return () => { u1(); u2(); u3(); u4(); u5(); u6(); };
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); };
   }, [user]);
 
   async function registerPushToken(userEmail) {
@@ -134,6 +143,7 @@ export default function App() {
     { id: "inventory", label: "Készlet", icon: Package },
     { id: "builder", label: "Gépépítő", icon: Wrench },
     { id: "finance", label: "Pénzügy", icon: Wallet },
+    { id: "warranty", label: "Garancia", icon: ShieldCheck },
     { id: "deals", label: "Deal Hunter", icon: Flame }
   ];
 
@@ -167,6 +177,15 @@ export default function App() {
             builds={builds}
             cardExpenses={cardExpenses}
             manualSales={manualSales}
+            userEmail={user.email}
+          />
+        )}
+        {tab === "warranty" && (
+          <WarrantyTab
+            parts={parts}
+            builds={builds}
+            warrantyItems={warrantyItems}
+            warrantyComplaints={warrantyComplaints}
             userEmail={user.email}
           />
         )}
