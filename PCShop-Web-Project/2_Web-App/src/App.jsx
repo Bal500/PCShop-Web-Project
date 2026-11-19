@@ -177,6 +177,7 @@ export default function App() {
             builds={builds}
             cardExpenses={cardExpenses}
             manualSales={manualSales}
+            warrantyComplaints={warrantyComplaints}
             userEmail={user.email}
           />
         )}

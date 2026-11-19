@@ -13,7 +13,7 @@ const INITIAL_CARD_LIMIT = 10;
 
 function isThisMonth(ts) {
   if (!ts) return false;
-  const d = new Date(ts);
+  const d = new Date(Number(ts));
   const now = new Date();
   return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
 }
@@ -44,7 +44,14 @@ function getBuildInvoices(build, parts) {
   return result;
 }
 
-export default function FinanceTab({ parts, builds, cardExpenses = [], manualSales = [], userEmail }) {
+export default function FinanceTab({
+  parts = [],
+  builds = [],
+  cardExpenses = [],
+  manualSales = [],
+  warrantyComplaints = [],
+  userEmail
+}) {
   const currentEmail = (userEmail || "").toLowerCase();
 
   const [showAddExpense, setShowAddExpense] = useState(false);
@@ -67,11 +74,11 @@ export default function FinanceTab({ parts, builds, cardExpenses = [], manualSal
   const [deletingEntryId, setDeletingEntryId] = useState(null);
   const [deleteTargetEntry, setDeleteTargetEntry] = useState(null);
 
-  const activeParts = parts.filter((p) => p.status !== "Eladva");
-  const totalInvested = activeParts.reduce((s, p) => s + (p.purchasePrice || 0), 0);
-  const totalMarket = activeParts.reduce((s, p) => s + (p.topMarketOffers?.[0]?.price || p.purchasePrice || 0), 0);
+  const activeParts = (parts || []).filter((p) => p.status !== "Eladva");
+  const totalInvested = activeParts.reduce((s, p) => s + Number(p.purchasePrice || 0), 0);
+  const expectedMargin = Math.round(totalInvested * 1.225);
 
-  const activePartCardItems = parts
+  const activePartCardItems = (parts || [])
     .filter((p) => p.paidWithOwnCard)
     .map((p) => ({
       id: p.id,
@@ -83,7 +90,7 @@ export default function FinanceTab({ parts, builds, cardExpenses = [], manualSal
       createdAt: p.createdAt || 0
     }));
 
-  const manualCardItems = cardExpenses
+  const manualCardItems = (cardExpenses || [])
     .filter((e) => !e.settled)
     .map((e) => ({
       id: e.id,
@@ -95,7 +102,9 @@ export default function FinanceTab({ parts, builds, cardExpenses = [], manualSal
       createdAt: e.createdAt || 0
     }));
 
-  const allCardItems = [...manualCardItems, ...activePartCardItems].sort((a, b) => b.createdAt - a.createdAt);
+  const allCardItems = [...manualCardItems, ...activePartCardItems].sort(
+    (a, b) => b.createdAt - a.createdAt
+  );
 
   const ownerEmails = Array.from(
     new Set([
@@ -104,8 +113,8 @@ export default function FinanceTab({ parts, builds, cardExpenses = [], manualSal
     ])
   );
 
-  const soldSoloParts = parts.filter((p) => p.status === "Eladva" && !p.buildId);
-  const soldBuilds = builds.filter((b) => b.status === "Eladva");
+  const soldSoloParts = (parts || []).filter((p) => p.status === "Eladva" && !p.buildId);
+  const soldBuilds = (builds || []).filter((b) => b.status === "Eladva");
 
   const allSalesEntries = [
     ...soldBuilds.map((b) => ({
@@ -114,9 +123,9 @@ export default function FinanceTab({ parts, builds, cardExpenses = [], manualSal
       source: "build",
       partIds: Array.isArray(b.partIds) ? b.partIds : [],
       title: `[Gép] ${b.name}`,
-      cost: b.totalCost || 0,
-      price: b.soldPrice || 0,
-      profit: (b.soldPrice || 0) - (b.totalCost || 0),
+      cost: Number(b.totalCost || 0),
+      price: Number(b.soldPrice || 0),
+      profit: Number(b.soldPrice || 0) - Number(b.totalCost || 0),
       soldAt: b.soldAt || 0,
       note: "",
       invoices: getBuildInvoices(b, parts)
@@ -126,34 +135,49 @@ export default function FinanceTab({ parts, builds, cardExpenses = [], manualSal
       rawId: p.id,
       source: "part",
       title: p.name,
-      cost: p.purchasePrice || 0,
-      price: p.soldPrice || 0,
-      profit: (p.soldPrice || 0) - (p.purchasePrice || 0),
+      cost: Number(p.purchasePrice || 0),
+      price: Number(p.soldPrice || 0),
+      profit: Number(p.soldPrice || 0) - Number(p.purchasePrice || 0),
       soldAt: p.soldAt || 0,
       note: "",
       invoices: p.invoiceFileUrl ? [{ id: p.id, label: p.name, url: p.invoiceFileUrl }] : []
     })),
-    ...manualSales.map((s) => ({
+    ...(manualSales || []).map((s) => ({
       id: `spontaneous-${s.id}`,
       rawId: s.id,
       source: "spontaneous",
       title: `[Spontán] ${s.title}`,
-      cost: s.cost || 0,
-      price: s.price || 0,
-      profit: (s.price || 0) - (s.cost || 0),
+      cost: Number(s.cost || 0),
+      price: Number(s.price || 0),
+      profit: Number(s.price || 0) - Number(s.cost || 0),
       soldAt: s.soldAt || s.createdAt || 0,
       note: s.note || "",
       invoices: []
     }))
   ].sort((a, b) => b.soldAt - a.soldAt);
 
+  // Garanciáztatási költségek (e havi és összesített)
+  const monthWarrantyCost = (warrantyComplaints || [])
+    .filter((c) => isThisMonth(c.createdAt))
+    .reduce((sum, c) => sum + Number(c.cost || 0), 0);
+
+  const allTimeWarrantyCost = (warrantyComplaints || []).reduce(
+    (sum, c) => sum + Number(c.cost || 0),
+    0
+  );
+
   const monthEntries = allSalesEntries.filter((entry) => isThisMonth(entry.soldAt));
-  const monthRevenue = monthEntries.reduce((s, entry) => s + (entry.price || 0), 0);
-  const monthProfit = monthEntries.reduce((s, entry) => s + (entry.profit || 0), 0);
-  const allTimeProfit = allSalesEntries.reduce((s, entry) => s + (entry.profit || 0), 0);
+  const monthRevenue = monthEntries.reduce((s, entry) => s + Number(entry.price || 0), 0);
+  const monthGrossProfit = monthEntries.reduce((s, entry) => s + Number(entry.profit || 0), 0);
+  const monthNetProfit = monthGrossProfit - monthWarrantyCost;
+
+  const allTimeGrossProfit = allSalesEntries.reduce((s, entry) => s + Number(entry.profit || 0), 0);
+  const allTimeNetProfit = allTimeGrossProfit - allTimeWarrantyCost;
 
   const hasMoreSales = allSalesEntries.length > INITIAL_SALES_LIMIT;
-  const visibleSalesLog = showAllSales ? allSalesEntries : allSalesEntries.slice(0, INITIAL_SALES_LIMIT);
+  const visibleSalesLog = showAllSales
+    ? allSalesEntries
+    : allSalesEntries.slice(0, INITIAL_SALES_LIMIT);
 
   function toggleCardOwner(owner) {
     setExpandedCardOwners((prev) => ({ ...prev, [owner]: !prev[owner] }));
@@ -163,7 +187,12 @@ export default function FinanceTab({ parts, builds, cardExpenses = [], manualSal
     e.preventDefault();
     setExpenseError("");
     const numericAmount = Number(amount);
-    if (!itemName.trim() || amount.trim() === "" || Number.isNaN(numericAmount) || numericAmount < 0) {
+    if (
+      !itemName.trim() ||
+      amount.trim() === "" ||
+      Number.isNaN(numericAmount) ||
+      numericAmount < 0
+    ) {
       setExpenseError("Adj meg érvényes tételnevet és összeget (0 Ft is lehet).");
       return;
     }
@@ -207,7 +236,12 @@ export default function FinanceTab({ parts, builds, cardExpenses = [], manualSal
     const numericPrice = Number(salePrice);
     const numericCost = saleCost.trim() === "" ? 0 : Number(saleCost);
 
-    if (!saleTitle.trim() || salePrice.trim() === "" || Number.isNaN(numericPrice) || numericPrice < 0) {
+    if (
+      !saleTitle.trim() ||
+      salePrice.trim() === "" ||
+      Number.isNaN(numericPrice) ||
+      numericPrice < 0
+    ) {
       setSaleError("Adj meg megnevezést és érvényes eladási árat (0 Ft is lehet).");
       return;
     }
@@ -340,7 +374,11 @@ export default function FinanceTab({ parts, builds, cardExpenses = [], manualSal
               onChange={(e) => setSaleNote(e.target.value)}
             />
           </div>
-          {saleError && <div className="red" style={{ marginTop: 8, fontSize: 13 }}>{saleError}</div>}
+          {saleError && (
+            <div className="red" style={{ marginTop: 8, fontSize: 13 }}>
+              {saleError}
+            </div>
+          )}
           <div className="row" style={{ marginTop: 12 }}>
             <button className="btn btn-green" type="submit" disabled={savingSale}>
               {savingSale ? "Mentés..." : "Felvétel a naplóba"}
@@ -381,7 +419,11 @@ export default function FinanceTab({ parts, builds, cardExpenses = [], manualSal
               onChange={(e) => setNote(e.target.value)}
             />
           </div>
-          {expenseError && <div className="red" style={{ marginTop: 8, fontSize: 13 }}>{expenseError}</div>}
+          {expenseError && (
+            <div className="red" style={{ marginTop: 8, fontSize: 13 }}>
+              {expenseError}
+            </div>
+          )}
           <div className="row" style={{ marginTop: 12 }}>
             <button className="btn btn-green" type="submit" disabled={savingExpense}>
               {savingExpense ? "Mentés..." : "Rögzítés a saját kártyámra"}
@@ -395,26 +437,49 @@ export default function FinanceTab({ parts, builds, cardExpenses = [], manualSal
 
       <div className="grid-2">
         <div className="card">
-          <h3 style={{ marginTop: 0 }}>Havi Realizált Profit</h3>
-          <div className="row"><span>E havi árbevétel:</span><strong>{monthRevenue.toLocaleString("hu-HU")} Ft</strong></div>
-          <div className="row" style={{ marginTop: 6 }}>
-            <strong>E havi tiszta profit:</strong>
-            <strong className={monthProfit >= 0 ? "green" : "red"}>{monthProfit >= 0 ? "+" : ""}{monthProfit.toLocaleString("hu-HU")} Ft</strong>
+          <h3 style={{ marginTop: 0 }}>Profit</h3>
+          <div className="row">
+            <span>E havi árbevétel:</span>
+            <strong>{monthRevenue.toLocaleString("hu-HU")} Ft</strong>
           </div>
           <div className="row" style={{ marginTop: 6 }}>
-            <span className="muted">Összesített profit:</span>
-            <strong>{allTimeProfit >= 0 ? "+" : ""}{allTimeProfit.toLocaleString("hu-HU")} Ft</strong>
+            <span>E havi garanciaköltség:</span>
+            <strong className={monthWarrantyCost > 0 ? "red" : "muted"}>
+              -{monthWarrantyCost.toLocaleString("hu-HU")} Ft
+            </strong>
+          </div>
+          <div className="row" style={{ marginTop: 6 }}>
+            <strong>E havi tiszta profit (garancia után):</strong>
+            <strong className={monthNetProfit >= 0 ? "green" : "red"}>
+              {monthNetProfit >= 0 ? "+" : ""}
+              {monthNetProfit.toLocaleString("hu-HU")} Ft
+            </strong>
+          </div>
+          <div className="row" style={{ marginTop: 6 }}>
+            <span className="muted">Összesített garanciaköltség:</span>
+            <strong className={allTimeWarrantyCost > 0 ? "red" : "muted"}>
+              -{allTimeWarrantyCost.toLocaleString("hu-HU")} Ft
+            </strong>
+          </div>
+          <div className="row" style={{ marginTop: 4 }}>
+            <span className="muted">Összesített profit (garancia után):</span>
+            <strong className={allTimeNetProfit >= 0 ? "green" : "red"}>
+              {allTimeNetProfit >= 0 ? "+" : ""}
+              {allTimeNetProfit.toLocaleString("hu-HU")} Ft
+            </strong>
           </div>
         </div>
 
         <div className="card">
-          <h3 style={{ marginTop: 0 }}>Aktív Készlet Mérlege</h3>
-          <div className="row"><span>Befektetett tőke:</span><strong>{totalInvested.toLocaleString("hu-HU")} Ft</strong></div>
-          <div className="row" style={{ marginTop: 6 }}><span>Legolcsóbb piaci érték:</span><strong>{totalMarket.toLocaleString("hu-HU")} Ft</strong></div>
-          <div className="row" style={{ marginTop: 6 }}>
-            <strong>Várható árrés:</strong>
-            <strong className={totalMarket - totalInvested >= 0 ? "green" : "red"}>
-              {totalMarket - totalInvested >= 0 ? "+" : ""}{(totalMarket - totalInvested).toLocaleString("hu-HU")} Ft
+          <h3 style={{ marginTop: 0 }}>Raktárérték</h3>
+          <div className="row">
+            <span>Befektetett tőke:</span>
+            <strong>{totalInvested.toLocaleString("hu-HU")} Ft</strong>
+          </div>
+          <div className="row" style={{ marginTop: 8 }}>
+            <strong>Várható árrés (22.5%):</strong>
+            <strong className="green" style={{ fontSize: 15 }}>
+              {expectedMargin.toLocaleString("hu-HU")} Ft
             </strong>
           </div>
         </div>
@@ -423,7 +488,7 @@ export default function FinanceTab({ parts, builds, cardExpenses = [], manualSal
       <div className="grid-2" style={{ marginTop: 4 }}>
         {ownerEmails.map((owner) => {
           const items = allCardItems.filter((i) => i.ownerEmail === owner);
-          const sum = items.reduce((s, i) => s + (i.amount || 0), 0);
+          const sum = items.reduce((s, i) => s + Number(i.amount || 0), 0);
           const isMine = owner === currentEmail;
           const isExpanded = !!expandedCardOwners[owner];
           const hasMoreCardItems = items.length > INITIAL_CARD_LIMIT;
@@ -463,7 +528,11 @@ export default function FinanceTab({ parts, builds, cardExpenses = [], manualSal
               ) : (
                 <>
                   {visibleCardItems.map((item) => (
-                    <div className="row" key={`${item.kind}-${item.id}`} style={{ padding: "8px 0", borderBottom: "1px solid var(--border)" }}>
+                    <div
+                      className="row"
+                      key={`${item.kind}-${item.id}`}
+                      style={{ padding: "8px 0", borderBottom: "1px solid var(--border)" }}
+                    >
                       <div>
                         <strong>{item.name}</strong>
                         <div className="muted">
@@ -475,12 +544,14 @@ export default function FinanceTab({ parts, builds, cardExpenses = [], manualSal
                           Kivettem
                         </button>
                       ) : (
-                        <span className="muted" style={{ fontSize: 12 }}>Csak megtekinthető</span>
+                        <span className="muted" style={{ fontSize: 12 }}>
+                          Csak megtekinthető
+                        </span>
                       )}
                     </div>
                   ))}
                   <div className="row" style={{ marginTop: 10 }}>
-                    <strong>Kintlévőség összesen:</strong>
+                    <strong>Ki nem vett pénz összesen:</strong>
                     <strong style={{ color: "#c084fc" }}>{sum.toLocaleString("hu-HU")} Ft</strong>
                   </div>
                 </>
@@ -531,13 +602,15 @@ export default function FinanceTab({ parts, builds, cardExpenses = [], manualSal
             <div className="row">
               <div>
                 <span>
-                  {entry.title} ({entry.cost.toLocaleString("hu-HU")} → {entry.price.toLocaleString("hu-HU")} Ft)
+                  {entry.title} ({entry.cost.toLocaleString("hu-HU")} →{" "}
+                  {entry.price.toLocaleString("hu-HU")} Ft)
                 </span>
                 {entry.note && <div className="muted">{entry.note}</div>}
               </div>
               <div className="row">
                 <strong className={entry.profit >= 0 ? "green" : "red"}>
-                  {entry.profit >= 0 ? "+" : ""}{entry.profit.toLocaleString("hu-HU")} Ft
+                  {entry.profit >= 0 ? "+" : ""}
+                  {entry.profit.toLocaleString("hu-HU")} Ft
                 </strong>
                 <button
                   type="button"
@@ -560,7 +633,13 @@ export default function FinanceTab({ parts, builds, cardExpenses = [], manualSal
                     href={inv.url}
                     target="_blank"
                     rel="noreferrer"
-                    style={{ color: "#fb923c", fontSize: 12, display: "inline-flex", alignItems: "center", gap: 4 }}
+                    style={{
+                      color: "#fb923c",
+                      fontSize: 12,
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 4
+                    }}
                   >
                     <FileText size={13} /> Számla: {inv.label}
                   </a>
@@ -594,7 +673,11 @@ export default function FinanceTab({ parts, builds, cardExpenses = [], manualSal
           >
             <div className="row" style={{ marginBottom: 10 }}>
               <h3 style={{ margin: 0 }}>Eltávolítás az eladási naplóból</h3>
-              <button className="btn btn-ghost" style={{ padding: 6 }} onClick={() => setDeleteTargetEntry(null)}>
+              <button
+                className="btn btn-ghost"
+                style={{ padding: 6 }}
+                onClick={() => setDeleteTargetEntry(null)}
+              >
                 <X size={16} />
               </button>
             </div>
