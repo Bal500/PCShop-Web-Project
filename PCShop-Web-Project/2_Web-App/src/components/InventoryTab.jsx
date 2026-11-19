@@ -20,12 +20,15 @@ export default function InventoryTab({ parts, userEmail }) {
   const [hasInvoice, setHasInvoice] = useState(true);
   const [invoiceFile, setInvoiceFile] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState("");
 
-  const canSave =
-    name.trim() &&
-    Number(purchasePrice) > 0 &&
-    (shipping || serialNumber.trim()) &&
-    (!hasInvoice || shipping || invoiceFile);
+  const missingReasons = [];
+  if (!name.trim()) missingReasons.push("Add meg a típus nevét");
+  if (!(Number(purchasePrice) > 0)) missingReasons.push("Adj meg érvényes beszerzési árat (> 0 Ft)");
+  if (!shipping && !serialNumber.trim()) missingReasons.push("Add meg a sorozatszámot (SN), vagy pipáld be a 'Szállítás alatt' opciót");
+  if (hasInvoice && !shipping && !invoiceFile) missingReasons.push("Válassz számlafájlt, vagy vedd ki a 'Számlás' pipát");
+
+  const canSave = missingReasons.length === 0;
 
   async function fetchTop3Both(q) {
     const [ha, vi] = await Promise.allSettled([callHardveraproTop3({ query: q }), callVintedTop3({ query: q })]);
@@ -38,7 +41,11 @@ export default function InventoryTab({ parts, userEmail }) {
 
   async function handleAdd(e) {
     e.preventDefault();
-    if (!canSave) return;
+    setFormError("");
+    if (!canSave) {
+      setFormError(missingReasons.join(" • "));
+      return;
+    }
     setSaving(true);
     try {
       let invoiceFileUrl = null;
@@ -47,7 +54,13 @@ export default function InventoryTab({ parts, userEmail }) {
         await uploadBytes(sRef, invoiceFile);
         invoiceFileUrl = await getDownloadURL(sRef);
       }
-      const topMarketOffers = await fetchTop3Both(name.trim()).catch(() => []);
+
+      let topMarketOffers = [];
+      try {
+        topMarketOffers = await fetchTop3Both(name.trim());
+      } catch (_) {
+        topMarketOffers = [];
+      }
 
       await addDoc(collection(db, "parts"), {
         name: name.trim(),
@@ -63,8 +76,17 @@ export default function InventoryTab({ parts, userEmail }) {
         createdAt: Date.now()
       });
 
-      setName(""); setSerialNumber(""); setPurchasePrice("");
-      setShipping(false); setOwnCard(false); setInvoiceFile(null); setShowForm(false);
+      setName("");
+      setSerialNumber("");
+      setPurchasePrice("");
+      setShipping(false);
+      setOwnCard(false);
+      setInvoiceFile(null);
+      setFormError("");
+      setShowForm(false);
+    } catch (err) {
+      console.error("Mentési hiba:", err);
+      setFormError(`Hiba mentés közben: ${err?.message || "Ismeretlen hiba"}`);
     } finally {
       setSaving(false);
     }
@@ -102,7 +124,7 @@ export default function InventoryTab({ parts, userEmail }) {
     <div>
       <div className="row" style={{ marginBottom: 14 }}>
         <h2 style={{ margin: 0 }}>Készlet & Rendelés</h2>
-        <button className="btn" onClick={() => setShowForm((v) => !v)}>
+        <button className="btn" onClick={() => { setFormError(""); setShowForm((v) => !v); }}>
           <Plus size={16} /> {showForm ? "Bezárás" : "Új tétel / Rendelés"}
         </button>
       </div>
@@ -127,9 +149,21 @@ export default function InventoryTab({ parts, userEmail }) {
           {hasInvoice && (
             <div style={{ marginTop: 10 }}>
               <div className="muted" style={{ marginBottom: 4 }}>
-                {shipping ? "Számla (átvételkor is csatolható)" : "Számla feltöltése kötelező (PDF/kép)"}
+                {shipping ? "Számla (átvételkor is csatolható)" : "Számla feltöltése kötelező (PDF/kép) — vagy vedd ki a 'Számlás' pipát"}
               </div>
               <input type="file" accept="application/pdf,image/*" onChange={(e) => setInvoiceFile(e.target.files?.[0] || null)} />
+            </div>
+          )}
+
+          {!canSave && (
+            <div className="muted" style={{ marginTop: 10 }}>
+              Hiányzik: {missingReasons.join(" • ")}
+            </div>
+          )}
+
+          {formError && (
+            <div className="red" style={{ marginTop: 8, fontSize: 13 }}>
+              {formError}
             </div>
           )}
 

@@ -4,8 +4,8 @@ service firebase.storage {
     function isAuthorizedOwner() {
       return request.auth != null &&
              request.auth.token.email in [
-               "te.email.cimed@gmail.com",
-               "baratod.email.cime@gmail.com"
+               "fabianbal500@gmail.com",
+               "beastmaster0626@gmail.com"
              ];
     }
 
